@@ -11,7 +11,6 @@ import os
 import shutil
 import time
 import gc
-import wandb
 import torch
 import torch.utils.data
 from collections import OrderedDict
@@ -23,6 +22,7 @@ else:
 from pointcept.utils.timer import Timer
 from pointcept.utils.comm import is_main_process, synchronize
 from pointcept.utils.cache import shared_dict
+from pointcept.utils import swanlab
 from pointcept.utils.scheduler import CosineScheduler
 import pointcept.utils.comm as comm
 
@@ -85,11 +85,14 @@ class InformationWriter(HookBase):
 
     def before_train(self):
         self.trainer.comm_info["iter_info"] = ""
-        self.curr_iter = self.trainer.start_epoch * len(self.trainer.train_loader)
-        if self.trainer.writer is not None and self.trainer.cfg.enable_wandb:
-            wandb.define_metric("params/*", step_metric="Iter")
-            wandb.define_metric("train_batch/*", step_metric="Iter")
-            wandb.define_metric("train/*", step_metric="Epoch")
+        self.curr_iter = (
+            self.trainer.start_epoch * len(self.trainer.train_loader)
+            + self.trainer.start_iter
+        )
+        if self.trainer.writer is not None and self.trainer.cfg.enable_swanlab:
+            swanlab.define_metric("params/*", step_metric="Iter")
+            swanlab.define_metric("train_batch/*", step_metric="Iter")
+            swanlab.define_metric("train/*", step_metric="Epoch")
 
     def before_step(self):
         self.curr_iter += 1
@@ -124,19 +127,13 @@ class InformationWriter(HookBase):
                     self.trainer.storage.history(key).val,
                     self.curr_iter,
                 )
-            if self.trainer.cfg.enable_wandb:
-
-                wandb.log(
-                    {"Iter": self.curr_iter, "params/lr": lr}, step=self.curr_iter
-                )
-                for key in self.model_output_keys:
-                    wandb.log(
-                        {
-                            "Iter": self.curr_iter,
-                            f"train_batch/{key}": self.trainer.storage.history(key).val,
-                        },
-                        step=wandb.run.step,
-                    )
+            if self.trainer.cfg.enable_swanlab:
+                metrics = {"Iter": self.curr_iter, "params/lr": lr}
+                metrics.update({
+                    f"train_batch/{key}": self.trainer.storage.history(key).val
+                    for key in self.model_output_keys
+                })
+                swanlab.log(metrics, step=self.curr_iter)
 
     def after_epoch(self):
         epoch_info = "Train result: "
@@ -153,69 +150,127 @@ class InformationWriter(HookBase):
                     self.trainer.epoch + 1,
                 )
 
-            if self.trainer.cfg.enable_wandb:
-
-                for key in self.model_output_keys:
-                    wandb.log(
-                        {
-                            "Epoch": self.trainer.epoch + 1,
-                            f"train/{key}": self.trainer.storage.history(key).avg,
+            if self.trainer.cfg.enable_swanlab:
+                swanlab.log(
+                    {
+                        "Epoch": self.trainer.epoch + 1,
+                        **{
+                            f"train/{key}": self.trainer.storage.history(key).avg
+                            for key in self.model_output_keys
                         },
-                        step=wandb.run.step,
-                    )
+                    },
+                    step=self.trainer.epoch + 1,
+                )
 
 
 @HOOKS.register_module()
 class CheckpointSaver(HookBase):
-    def __init__(self, save_freq=None):
-        self.save_freq = save_freq  # None or int, None indicate only save model last
+    def __init__(
+        self,
+        save_freq=None,
+        save_last_freq=0,
+        save_epoch_freq=0,
+        metric_mode="max",
+    ):
+        self.save_freq = save_freq
+        self.save_last_freq = int(save_last_freq or 0)
+        self.save_epoch_freq = int(save_epoch_freq or 0)
+        if self.save_last_freq < 0:
+            raise ValueError("save_last_freq must be non-negative")
+        if self.save_epoch_freq < 0:
+            raise ValueError("save_epoch_freq must be non-negative")
+        if metric_mode not in {"max", "min"}:
+            raise ValueError(f"metric_mode must be 'max' or 'min', got {metric_mode!r}")
+        self.metric_mode = metric_mode
+
+    def _save_checkpoint(self, filename, epoch, iteration):
+        torch.save(
+            {
+                "epoch": epoch,
+                "iter": iteration,
+                "global_step": self.trainer.global_step,
+                "state_dict": self.trainer.model.state_dict(),
+                "optimizer": self.trainer.optimizer.state_dict(),
+                "scheduler": self.trainer.scheduler.state_dict(),
+                "scaler": (
+                    self.trainer.scaler.state_dict()
+                    if self.trainer.cfg.enable_amp
+                    else None
+                ),
+                "best_metric_value": self.trainer.best_metric_value,
+            },
+            filename + ".tmp",
+        )
+        os.replace(filename + ".tmp", filename)
+
+    def _update_best(self):
+        if not self.trainer.cfg.evaluate:
+            return False
+        value = self.trainer.comm_info["current_metric_value"]
+        name = self.trainer.comm_info["current_metric_name"]
+        improved = (value > self.trainer.best_metric_value if self.metric_mode == "max"
+                    else value < self.trainer.best_metric_value)
+        if improved:
+            self.trainer.best_metric_value = value
+            self.trainer.logger.info("Best validation %s updated to: %.4f", name, value)
+        return improved
+
+    def after_step(self):
+        if not is_main_process():
+            return
+        global_step = self.trainer.global_step
+        if global_step == 0:
+            return
+        iteration = self.trainer.comm_info["iter"] + 1
+        if (
+            self.trainer.cfg.evaluate
+            and self.trainer.comm_info.get("eval_step") == global_step
+            and getattr(self, "last_metric_step", None) != global_step
+        ):
+            if self._update_best():
+                self._save_checkpoint(
+                    os.path.join(self.trainer.cfg.save_path, "model", "model_best.pth"),
+                    self.trainer.epoch, iteration,
+                )
+            self.last_metric_step = global_step
+        if (
+            self.save_last_freq > 0
+            and global_step % self.save_last_freq == 0
+            and getattr(self, "last_saved_step", None) != global_step
+        ):
+            filename = os.path.join(
+                self.trainer.cfg.save_path, "model", "model_last.pth"
+            )
+            self.trainer.logger.info(
+                "Saving step checkpoint at global step %d: %s",
+                global_step,
+                filename,
+            )
+            self._save_checkpoint(filename, self.trainer.epoch, iteration)
+            self.last_saved_step = global_step
+
+    def before_train(self):
+        if self.metric_mode == "min" and self.trainer.best_metric_value == -torch.inf:
+            self.trainer.best_metric_value = torch.inf
+        self.last_saved_step = self.trainer.global_step
 
     def after_epoch(self):
         if is_main_process():
-            is_best = False
-            if self.trainer.cfg.evaluate:
-                current_metric_value = self.trainer.comm_info["current_metric_value"]
-                current_metric_name = self.trainer.comm_info["current_metric_name"]
-                if current_metric_value > self.trainer.best_metric_value:
-                    self.trainer.best_metric_value = current_metric_value
-                    is_best = True
-                    self.trainer.logger.info(
-                        "Best validation {} updated to: {:.4f}".format(
-                            current_metric_name, current_metric_value
-                        )
-                    )
-                self.trainer.logger.info(
-                    "Currently Best {}: {:.4f}".format(
-                        current_metric_name, self.trainer.best_metric_value
-                    )
-                )
+            is_best = self._update_best()
 
             filename = os.path.join(
                 self.trainer.cfg.save_path, "model", "model_last.pth"
             )
             self.trainer.logger.info("Saving checkpoint to: " + filename)
-            torch.save(
-                {
-                    "epoch": self.trainer.epoch + 1,
-                    "state_dict": self.trainer.model.state_dict(),
-                    "optimizer": self.trainer.optimizer.state_dict(),
-                    "scheduler": self.trainer.scheduler.state_dict(),
-                    "scaler": (
-                        self.trainer.scaler.state_dict()
-                        if self.trainer.cfg.enable_amp
-                        else None
-                    ),
-                    "best_metric_value": self.trainer.best_metric_value,
-                },
-                filename + ".tmp",
-            )
-            os.replace(filename + ".tmp", filename)
+            self._save_checkpoint(filename, self.trainer.epoch + 1, 0)
             if is_best:
                 shutil.copyfile(
                     filename,
                     os.path.join(self.trainer.cfg.save_path, "model", "model_best.pth"),
                 )
-            if self.save_freq and (self.trainer.epoch + 1) % self.save_freq == 0:
+            if ((self.save_freq and (self.trainer.epoch + 1) % self.save_freq == 0)
+                    or (self.save_epoch_freq and
+                        (self.trainer.epoch + 1) % self.save_epoch_freq == 0)):
                 shutil.copyfile(
                     filename,
                     os.path.join(
@@ -262,9 +317,16 @@ class CheckpointLoader(HookBase):
             self.trainer.logger.info(f"Missing keys: {load_state_info[0]}")
             if self.trainer.cfg.resume:
                 self.trainer.logger.info(
-                    f"Resuming train at eval epoch: {checkpoint['epoch']}"
+                    f"Resuming train at epoch: {checkpoint['epoch']}"
                 )
                 self.trainer.start_epoch = checkpoint["epoch"]
+                self.trainer.start_iter = checkpoint.get("iter", 0)
+                self.trainer.global_step = checkpoint.get(
+                    "global_step",
+                    checkpoint.get("scheduler", {}).get(
+                        "last_epoch", self.trainer.global_step
+                    ),
+                )
                 self.trainer.best_metric_value = checkpoint["best_metric_value"]
                 self.trainer.optimizer.load_state_dict(checkpoint["optimizer"])
                 self.trainer.scheduler.load_state_dict(checkpoint["scheduler"])

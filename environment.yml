@@ -24,7 +24,6 @@ dependencies:
   - pyyaml
   - tensorboard
   - tensorboardx
-  - wandb
   - yapf
   - addict
   - einops
@@ -38,14 +37,17 @@ dependencies:
   - matplotlib
   - black
   - open3d
-  - peft
   - pip:
+    - swanlab==0.9.0
+    - transformers==4.50.3
+    - tokenizers==0.21.4
+    - huggingface-hub>=0.26,<1.0
+    - peft==0.21.2
     - torch-cluster -f https://data.pyg.org/whl/torch-2.5.0+cu124.html
     - torch-scatter -f https://data.pyg.org/whl/torch-2.5.0+cu124.html
     - torch-sparse -f https://data.pyg.org/whl/torch-2.5.0+cu124.html
     - torch_geometric
     - spconv-cu124
-    - peft #for lora finetune
     - git+https://github.com/octree-nn/ocnn-pytorch.git
     - git+https://github.com/openai/CLIP.git
     - git+https://github.com/Dao-AILab/flash-attention.git

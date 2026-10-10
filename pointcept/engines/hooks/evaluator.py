@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import pointops
-import wandb
+from pointcept.utils import swanlab
 from uuid import uuid4
 
 import pointcept.utils.comm as comm
@@ -26,8 +26,8 @@ class ClsEvaluator(HookBase):
             self.eval()
 
     def before_train(self):
-        if self.trainer.writer is not None and self.trainer.cfg.enable_wandb:
-            wandb.define_metric("val/*", step_metric="Epoch")
+        if self.trainer.writer is not None and self.trainer.cfg.enable_swanlab:
+            swanlab.define_metric("val/*", step_metric="Epoch")
 
     def eval(self):
         self.trainer.logger.info(
@@ -129,8 +129,8 @@ class ClsEvaluator(HookBase):
             self.trainer.writer.add_scalar("val/mPrecision", m_precision, current_epoch)
             self.trainer.writer.add_scalar("val/allAcc", all_acc, current_epoch)
 
-            if self.trainer.cfg.enable_wandb:
-                wandb.log(
+            if self.trainer.cfg.enable_swanlab:
+                swanlab.log(
                     {
                         "Epoch": current_epoch,
                         "val/loss": loss_avg,
@@ -140,7 +140,7 @@ class ClsEvaluator(HookBase):
                         "val/mPrecision": m_precision,
                         "val/allAcc": all_acc,
                     },
-                    step=wandb.run.step,
+                    step=current_epoch,
                 )
         self.trainer.logger.info("<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<")
         self.trainer.comm_info["current_metric_value"] = all_acc
@@ -158,8 +158,8 @@ class SemSegEvaluator(HookBase):
         self.write_cls_metrics = write_cls_metrics
 
     def before_train(self):
-        if self.trainer.writer is not None and self.trainer.cfg.enable_wandb:
-            wandb.define_metric("val/*", step_metric="Epoch")
+        if self.trainer.writer is not None and self.trainer.cfg.enable_swanlab:
+            swanlab.define_metric("val/*", step_metric="Epoch")
 
     def after_epoch(self):
         if self.trainer.cfg.evaluate:
@@ -284,8 +284,8 @@ class SemSegEvaluator(HookBase):
             self.trainer.writer.add_scalar("val/mPrecision", m_precision, current_epoch)
             self.trainer.writer.add_scalar("val/allAcc", all_acc, current_epoch)
 
-            if self.trainer.cfg.enable_wandb:
-                wandb.log(
+            if self.trainer.cfg.enable_swanlab:
+                swanlab.log(
                     {
                         "val/loss": loss_avg,
                         "val/mIoU": m_iou,
@@ -295,7 +295,7 @@ class SemSegEvaluator(HookBase):
                         "val/allAcc": all_acc,
                         "Epoch": current_epoch,
                     },
-                    step=wandb.run.step,
+                    step=current_epoch,
                 )
 
             if self.write_cls_metrics:
@@ -308,14 +308,14 @@ class SemSegEvaluator(HookBase):
                         f"val/cls_{i}-{name}_F1", f1_class[i], current_epoch
                     )
 
-                    if self.trainer.cfg.enable_wandb:
-                        wandb.log(
+                    if self.trainer.cfg.enable_swanlab:
+                        swanlab.log(
                             {
                                 f"val/cls_{i}-{name}_IoU": iou_class[i],
                                 f"val/cls_{i}-{name}_F1": f1_class[i],
                                 "Epoch": current_epoch,
                             },
-                            step=wandb.run.step,
+                            step=current_epoch,
                         )
 
         self.trainer.logger.info("<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<")
@@ -711,8 +711,8 @@ class InsSegEvaluator(HookBase):
                 self.trainer.writer.add_scalar("val/mAP", all_ap, current_epoch)
                 self.trainer.writer.add_scalar("val/AP50", all_ap_50, current_epoch)
                 self.trainer.writer.add_scalar("val/AP25", all_ap_25, current_epoch)
-                if self.trainer.cfg.enable_wandb:
-                    wandb.log(
+                if self.trainer.cfg.enable_swanlab:
+                    swanlab.log(
                         {
                             "Epoch": current_epoch,
                             "val/loss": loss_avg,
@@ -720,7 +720,7 @@ class InsSegEvaluator(HookBase):
                             "val/AP50": all_ap_50,
                             "val/AP25": all_ap_25,
                         },
-                        step=wandb.run.step,
+                        step=current_epoch,
                     )
             self.trainer.logger.info(
                 "<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<"
@@ -735,8 +735,8 @@ class ShapeNetPartSegEvaluator(HookBase):
         self.write_cls_iou = write_cls_iou
 
     def before_train(self):
-        if self.trainer.writer is not None and self.trainer.cfg.enable_wandb:
-            wandb.define_metric("val/*", step_metric="Epoch")
+        if self.trainer.writer is not None and self.trainer.cfg.enable_swanlab:
+            swanlab.define_metric("val/*", step_metric="Epoch")
 
     def after_epoch(self):
         if self.trainer.cfg.evaluate:
@@ -827,14 +827,14 @@ class ShapeNetPartSegEvaluator(HookBase):
         if self.trainer.writer is not None:
             self.trainer.writer.add_scalar("val/ins_mIoU", ins_mIoU, current_epoch)
             self.trainer.writer.add_scalar("val/cat_mIoU", cat_mIoU, current_epoch)
-            if self.trainer.cfg.enable_wandb:
-                wandb.log(
+            if self.trainer.cfg.enable_swanlab:
+                swanlab.log(
                     {
                         "Epoch": current_epoch,
                         "val/ins_mIoU": ins_mIoU,
                         "val/cat_mIoU": cat_mIoU,
                     },
-                    step=wandb.run.step,
+                    step=current_epoch,
                 )
 
             if self.write_cls_iou:
@@ -871,8 +871,8 @@ class PartNetEPartSegEvaluator(HookBase):
         self.write_part_iou = write_part_iou
 
     def before_train(self):
-        if self.trainer.writer is not None and self.trainer.cfg.enable_wandb:
-            wandb.define_metric("val/*", step_metric="Epoch")
+        if self.trainer.writer is not None and self.trainer.cfg.enable_swanlab:
+            swanlab.define_metric("val/*", step_metric="Epoch")
 
     def after_epoch(self):
         if self.trainer.cfg.evaluate:
@@ -960,13 +960,13 @@ class PartNetEPartSegEvaluator(HookBase):
         current_epoch = self.trainer.epoch + 1
         if self.trainer.writer is not None:
             self.trainer.writer.add_scalar("val/part_mIoU", part_mIoU, current_epoch)
-            if self.trainer.cfg.enable_wandb:
-                wandb.log(
+            if self.trainer.cfg.enable_swanlab:
+                swanlab.log(
                     {
                         "Epoch": current_epoch,
                         "val/part_mIoU": part_mIoU,
                     },
-                    step=wandb.run.step,
+                    step=current_epoch,
                 )
 
             if self.write_part_iou:

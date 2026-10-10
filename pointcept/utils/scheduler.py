@@ -137,6 +137,10 @@ class OneCycleLR(lr_scheduler.OneCycleLR):
         three_phase=False,
         last_epoch=-1,
     ):
+        # A scalar peak defines one schedule; groups can follow it at a fixed ratio.
+        if isinstance(max_lr, (int, float)):
+            max_lr = [max_lr * group.get("lr_scale", 1.0)
+                      for group in optimizer.param_groups]
         super().__init__(
             optimizer=optimizer,
             max_lr=max_lr,

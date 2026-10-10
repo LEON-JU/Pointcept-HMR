@@ -26,8 +26,25 @@ def build_optimizer(cfg, model, param_dicts=None):
         cfg.params = model.parameters()
     else:
         cfg.params = [dict(names=[], params=[], lr=cfg.lr)]
+        module_param_ids = []
         for i in range(len(param_dicts)):
             param_group = dict(names=[], params=[])
+            rule = param_dicts[i]
+            if "module_type" in rule:
+                module_param_ids.append({
+                    id(p)
+                    for name, module in model.named_modules()
+                    if rule.keyword in name
+                    and module.__class__.__name__ == rule.module_type
+                    for p in module.parameters()
+                })
+            else:
+                module_param_ids.append(None)
+            if "lr_scale" in rule:
+                if "lr" in rule:
+                    raise ValueError("Specify either lr or lr_scale in a parameter group")
+                param_group["lr_scale"] = float(rule.lr_scale)
+                param_group["lr"] = cfg.lr * param_group["lr_scale"]
             if "lr" in param_dicts[i].keys():
                 param_group["lr"] = param_dicts[i].lr
             if "momentum" in param_dicts[i].keys():
@@ -43,7 +60,12 @@ def build_optimizer(cfg, model, param_dicts=None):
                 continue
             flag = False
             for i in range(len(param_dicts)):
-                if param_dicts[i].keyword in n:
+                matched = (
+                    id(p) in module_param_ids[i]
+                    if module_param_ids[i] is not None
+                    else param_dicts[i].keyword in n
+                )
+                if matched:
                     cfg.params[i + 1]["names"].append(n)
                     cfg.params[i + 1]["params"].append(p)
                     flag = True
@@ -54,10 +76,16 @@ def build_optimizer(cfg, model, param_dicts=None):
 
         logger = get_root_logger()
         for i in range(len(cfg.params)):
-            param_names = cfg.params[i].pop("names")
-            message = ""
-            for key in cfg.params[i].keys():
-                if key != "params":
-                    message += f" {key}: {cfg.params[i][key]};"
-            logger.info(f"Params Group {i+1} -{message} Params: {param_names}.")
+            cfg.params[i].pop("names")
+            group_name = "default" if i == 0 else param_dicts[i - 1].keyword
+            param_count = sum(param.numel() for param in cfg.params[i]["params"])
+            logger.info(
+                "Params Group %d (%s): lr=%s weight_decay=%s tensors=%d parameters=%d",
+                i + 1,
+                group_name,
+                cfg.params[i].get("lr", cfg.lr),
+                cfg.params[i].get("weight_decay", cfg.weight_decay if "weight_decay" in cfg else None),
+                len(cfg.params[i]["params"]),
+                param_count,
+            )
     return OPTIMIZERS.build(cfg=cfg)

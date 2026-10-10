@@ -10,8 +10,8 @@ batch_size = 16  # total batch size in all gpu
 gradient_accumulation_steps = 1  # total steps to accumulate gradients for
 batch_size_val = None  # auto adapt to bs 1 for each gpu
 batch_size_test = None  # auto adapt to bs 1 for each gpu
-epoch = 100  # total epoch, data loop = epoch // eval_epoch
-eval_epoch = 100  # sche total eval & checkpoint epoch
+epoch = 100  # total passes over the training dataset
+eval_every_step = 0  # human-pose eval interval in optimizer steps; 0 = epoch end only
 clip_grad = None  # disable with None, enable with a float
 
 sync_bn = False
@@ -21,9 +21,9 @@ empty_cache = False
 empty_cache_per_epoch = False
 find_unused_parameters = False
 
-enable_wandb = True
-wandb_project = "pointcept"  # custom your project name e.g. Sonata, PTv3
-wandb_key = None  # wandb token, default is None. If None, login with `wandb login` in your terminal
+enable_swanlab = True
+swanlab_project = "pointcept"
+swanlab_mode = "online"  # online, local, offline, or disabled
 
 mix_prob = 0
 param_dicts = None  # example: param_dicts = [dict(keyword="block", lr_scale=0.1)]

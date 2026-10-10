@@ -36,6 +36,7 @@ from .scanobjectnn import (
 )
 from .partnet import PartNetDataDataset
 from .partnete import PartNetEDataset
+from .human_pose import *
 
 # dataloader
 from .dataloader import MultiDatasetDataloader

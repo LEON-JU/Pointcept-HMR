@@ -8,7 +8,6 @@ Please cite our work if the code is helpful to you.
 import os
 import sys
 import weakref
-import wandb
 import torch
 import torch.nn as nn
 import torch.utils.data
@@ -27,9 +26,14 @@ from .defaults import create_ddp_model, worker_init_fn
 from .hooks import HookBase, build_hooks
 import pointcept.utils.comm as comm
 from pointcept.datasets import build_dataset, point_collate_fn, collate_fn
+from pointcept.datasets.human_pose import (
+    HumanPoseDistributedEvalSampler,
+    human_pose_collate_fn,
+)
 from pointcept.models import build_model
 from pointcept.utils.logger import get_root_logger
 from pointcept.utils.optimizer import build_optimizer
+from pointcept.utils import swanlab
 from pointcept.utils.scheduler import build_scheduler
 from pointcept.utils.events import EventStorage, ExceptionWriter
 from pointcept.utils.registry import Registry
@@ -120,6 +124,8 @@ class TrainerBase:
             h.after_train()
         if comm.is_main_process():
             self.writer.close()
+            if self.cfg.enable_swanlab:
+                swanlab.finish()
 
 
 @TRAINERS.register_module("DefaultTrainer")
@@ -128,7 +134,9 @@ class Trainer(TrainerBase):
         super(Trainer, self).__init__()
         self.epoch = 0
         self.start_epoch = 0
-        self.max_epoch = cfg.eval_epoch
+        self.start_iter = 0
+        self.global_step = 0
+        self.max_epoch = cfg.epoch
         self.best_metric_value = -torch.inf
         self.logger = get_root_logger(
             log_file=os.path.join(cfg.save_path, "train.log"),
@@ -161,7 +169,7 @@ class Trainer(TrainerBase):
             self.logger.info(">>>>>>>>>>>>>>>> Start Training >>>>>>>>>>>>>>>>")
             for self.epoch in range(self.start_epoch, self.max_epoch):
                 # => before epoch
-                if comm.get_world_size() > 1:
+                if hasattr(self.train_loader.sampler, "set_epoch"):
                     self.train_loader.sampler.set_epoch(self.epoch)
                 self.model.train()
                 self.data_iterator = enumerate(self.train_loader)
@@ -171,12 +179,15 @@ class Trainer(TrainerBase):
                     self.comm_info["iter"],
                     self.comm_info["input_dict"],
                 ) in self.data_iterator:
+                    if self.comm_info["iter"] < self.start_iter:
+                        continue
                     # => before_step
                     self.before_step()
                     # => run_step
                     self.run_step()
                     # => after_step
                     self.after_step()
+                self.start_iter = 0
                 # => after epoch
                 self.after_epoch()
             # => after train
@@ -230,6 +241,7 @@ class Trainer(TrainerBase):
                 self.scaler.update()
                 if scale <= self.scaler.get_scale():
                     self.scheduler.step()
+                    self.global_step += 1
             else:
                 if self.cfg.clip_grad is not None:
                     torch.nn.utils.clip_grad_norm_(
@@ -237,6 +249,7 @@ class Trainer(TrainerBase):
                     )
                 self.optimizer.step()
                 self.scheduler.step()
+                self.global_step += 1
 
             # Reset grad accumulation counter
             self._gradient_accumulation_counter = 0
@@ -269,14 +282,13 @@ class Trainer(TrainerBase):
     def build_writer(self):
         writer = SummaryWriter(self.cfg.save_path) if comm.is_main_process() else None
         self.logger.info(f"Tensorboard writer logging dir: {self.cfg.save_path}")
-        if self.cfg.enable_wandb and comm.is_main_process():
+        if self.cfg.enable_swanlab and comm.is_main_process():
             tag, name = Path(self.cfg.save_path).parts[-2:]
-            wandb.init(
-                project=self.cfg.wandb_project,
+            swanlab.init(
+                project=self.cfg.swanlab_project,
                 name=f"{tag}/{name}",
-                tags=[tag],
-                dir=self.cfg.save_path,
-                settings=wandb.Settings(api_key=self.cfg.wandb_key),
+                log_dir=os.path.join(self.cfg.save_path, "swanlab"),
+                mode=self.cfg.swanlab_mode,
                 config=self.cfg,
             )
         return writer
@@ -284,8 +296,15 @@ class Trainer(TrainerBase):
     def build_train_loader(self):
         train_data = build_dataset(self.cfg.data.train)
 
-        if comm.get_world_size() > 1:
-            train_sampler = torch.utils.data.distributed.DistributedSampler(train_data)
+        if comm.get_world_size() > 1 or self.cfg.data.train.get(
+            "human_pose_collate", False
+        ):
+            train_sampler = torch.utils.data.distributed.DistributedSampler(
+                train_data,
+                num_replicas=comm.get_world_size(),
+                rank=comm.get_rank(),
+                seed=self.cfg.seed if self.cfg.seed is not None else 0,
+            )
         else:
             train_sampler = None
 
@@ -306,11 +325,12 @@ class Trainer(TrainerBase):
             shuffle=(train_sampler is None),
             num_workers=self.cfg.num_worker_per_gpu,
             sampler=train_sampler,
-            collate_fn=partial(point_collate_fn, mix_prob=self.cfg.mix_prob),
+            collate_fn=(human_pose_collate_fn if self.cfg.data.train.get("human_pose_collate", False)
+                        else partial(point_collate_fn, mix_prob=self.cfg.mix_prob)),
             pin_memory=True,
             worker_init_fn=init_fn,
             drop_last=len(train_data) > self.cfg.batch_size,
-            persistent_workers=True,
+            persistent_workers=self.cfg.num_worker_per_gpu > 0,
         )
         return train_loader
 
@@ -319,7 +339,11 @@ class Trainer(TrainerBase):
         if self.cfg.evaluate:
             val_data = build_dataset(self.cfg.data.val)
             if comm.get_world_size() > 1:
-                val_sampler = torch.utils.data.distributed.DistributedSampler(val_data)
+                val_sampler = (
+                    HumanPoseDistributedEvalSampler(val_data)
+                    if self.cfg.data.val.get("human_pose_collate", False)
+                    else torch.utils.data.distributed.DistributedSampler(val_data)
+                )
             else:
                 val_sampler = None
             val_loader = torch.utils.data.DataLoader(
@@ -329,7 +353,8 @@ class Trainer(TrainerBase):
                 num_workers=self.cfg.num_worker_per_gpu,
                 pin_memory=True,
                 sampler=val_sampler,
-                collate_fn=collate_fn,
+                collate_fn=(human_pose_collate_fn if self.cfg.data.val.get("human_pose_collate", False)
+                            else collate_fn),
             )
         return val_loader
 
@@ -341,7 +366,7 @@ class Trainer(TrainerBase):
         assert hasattr(self, "train_loader")
         self.cfg.scheduler.total_steps = (
             len(self.train_loader)
-            * self.cfg.eval_epoch
+            * self.cfg.epoch
             // self.cfg.gradient_accumulation_steps
         )
         return build_scheduler(self.cfg.scheduler, self.optimizer)

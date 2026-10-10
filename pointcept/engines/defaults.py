@@ -119,7 +119,17 @@ def default_config_parser(file_path, options):
     if cfg.seed is None:
         cfg.seed = get_random_seed()
 
-    cfg.data.train.loop = cfg.epoch // cfg.eval_epoch
+    if "eval_epoch" in cfg:
+        raise ValueError(
+            "eval_epoch has been removed. Set epoch to the total training epochs "
+            "and eval_every_step to an optimizer-step interval (0 = epoch end only)."
+        )
+    if not isinstance(cfg.epoch, int) or cfg.epoch <= 0:
+        raise ValueError("epoch must be a positive integer")
+    if not isinstance(cfg.eval_every_step, int) or cfg.eval_every_step < 0:
+        raise ValueError("eval_every_step must be a non-negative integer")
+    # Every trainer epoch is exactly one pass over the training dataset.
+    cfg.data.train.loop = 1
 
     os.makedirs(os.path.join(cfg.save_path, "model"), exist_ok=True)
     if not cfg.resume:
@@ -142,8 +152,6 @@ def default_setup(cfg):
     cfg.batch_size_test_per_gpu = (
         cfg.batch_size_test // world_size if cfg.batch_size_test is not None else 1
     )
-    # update data loop
-    assert cfg.epoch % cfg.eval_epoch == 0
     # settle random seed
     rank = comm.get_rank()
     seed = None if cfg.seed is None else cfg.seed + rank * cfg.num_worker_per_gpu

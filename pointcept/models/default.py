@@ -1,8 +1,14 @@
 import torch
 import torch.nn as nn
 import torch_scatter
-import torch_cluster
-from peft import LoraConfig, get_peft_model
+try:
+    import torch_cluster
+except ImportError:  # Optional dependency used only by some legacy heads.
+    torch_cluster = None
+try:
+    from peft import LoraConfig, get_peft_model
+except ImportError:  # Optional dependency used only by LoRA segmentation models.
+    LoraConfig = get_peft_model = None
 from collections import OrderedDict
 
 from pointcept.models.losses import build_criteria

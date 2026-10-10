@@ -1,3 +1,4 @@
+import os
 import torch
 from .z_order import xyz2key as z_order_encode_
 from .z_order import key2xyz as z_order_decode_
@@ -8,6 +9,19 @@ from .hilbert import decode as hilbert_decode_
 @torch.inference_mode()
 def encode(grid_coord, batch=None, depth=16, order="z"):
     assert order in {"z", "z-trans", "hilbert", "hilbert-trans"}
+    if os.environ.get("POINTCEPT_SERIALIZATION_BACKEND", "torch").lower() == "cuda":
+        from pointcept.models.human_pose.ops.serialization import (
+            hilbert_encode as cuda_hilbert_encode,
+            morton_encode as cuda_morton_encode,
+        )
+        coords = grid_coord[:, [1, 0, 2]] if order.endswith("-trans") else grid_coord
+        if order.startswith("hilbert"):
+            code = cuda_hilbert_encode(coords, depth)
+        else:
+            code = cuda_morton_encode(coords)
+        if batch is not None:
+            code = (batch.long() << (depth * 3)) | code
+        return code
     if order == "z":
         code = z_order_encode(grid_coord, depth=depth)
     elif order == "z-trans":

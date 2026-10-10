@@ -74,12 +74,23 @@ class Point(Dict):
             depth = int(self.grid_coord.max() + 1).bit_length()
         self["serialized_depth"] = depth
         # Maximum bit length for serialization code is 63 (int64)
-        assert depth * 3 + len(self.offset).bit_length() <= 63
+        required_bits = depth * 3 + len(self.offset).bit_length()
+        if required_bits > 63:
+            raise ValueError(
+                "Point serialization code exceeds int64 capacity: "
+                f"depth={depth}, batch_size={len(self.offset)}, "
+                f"grid_coord_max={int(self.grid_coord.max())}, "
+                f"required_bits={required_bits}"
+            )
         # Here we follow OCNN and set the depth limitation to 16 (48bit) for the point position.
         # Although depth is limited to less than 16, we can encode a 655.36^3 (2^16 * 0.01) meter^3
         # cube with a grid size of 0.01 meter. We consider it is enough for the current stage.
         # We can unlock the limitation by optimizing the z-order encoding function if necessary.
-        assert depth <= 16
+        if depth > 16:
+            raise ValueError(
+                f"Point serialization depth must be <= 16, got {depth}; "
+                f"grid_coord_max={int(self.grid_coord.max())}"
+            )
 
         # The serialization codes are arranged as following structures:
         # [Order1 ([n]),

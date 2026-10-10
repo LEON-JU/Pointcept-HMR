@@ -54,7 +54,8 @@ RUN export DEBIAN_FRONTEND=noninteractive \
   && export DEBIAN_FRONTEND=dialog
 
 # Install Pointcept environment
-RUN conda install h5py pyyaml tensorboard tensorboardx wandb yapf addict einops scipy plyfile termcolor matplotlib black open3d -c conda-forge -y
+RUN conda install h5py pyyaml tensorboard tensorboardx yapf addict einops scipy plyfile termcolor matplotlib black open3d -c conda-forge -y
+RUN pip install swanlab==0.9.0
 
 RUN pip install --upgrade pip
 RUN pip install peft
