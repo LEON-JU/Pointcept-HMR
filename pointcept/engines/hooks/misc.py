@@ -41,7 +41,10 @@ class IterationTimer(HookBase):
     def before_train(self):
         self._start_time = time.perf_counter()
         _remain_epoch = self.trainer.max_epoch - self.trainer.start_epoch
-        self._remain_iter = _remain_epoch * len(self.trainer.train_loader)
+        self._remain_iter = (
+            _remain_epoch * len(self.trainer.train_loader)
+            - self.trainer.start_iter
+        )
 
     def before_epoch(self):
         self._iter_timer.reset()
@@ -189,6 +192,11 @@ class CheckpointSaver(HookBase):
                 "epoch": epoch,
                 "iter": iteration,
                 "global_step": self.trainer.global_step,
+                "sampler_seed": (
+                    self.trainer.cfg.seed
+                    if iteration == 0
+                    else self.trainer.current_sampler_seed
+                ),
                 "state_dict": self.trainer.model.state_dict(),
                 "optimizer": self.trainer.optimizer.state_dict(),
                 "scheduler": self.trainer.scheduler.state_dict(),
@@ -321,6 +329,9 @@ class CheckpointLoader(HookBase):
                 )
                 self.trainer.start_epoch = checkpoint["epoch"]
                 self.trainer.start_iter = checkpoint.get("iter", 0)
+                self.trainer.current_sampler_seed = checkpoint.get(
+                    "sampler_seed", self.trainer.cfg.seed
+                )
                 self.trainer.global_step = checkpoint.get(
                     "global_step",
                     checkpoint.get("scheduler", {}).get(

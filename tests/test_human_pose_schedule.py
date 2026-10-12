@@ -11,7 +11,7 @@ import torch
 from pointcept.engines.defaults import default_config_parser
 from pointcept.engines.hooks.human_pose_evaluator import HumanPoseEvaluator
 from pointcept.engines.hooks.misc import CheckpointSaver
-from pointcept.engines.train import Trainer
+from pointcept.engines.train import ResumableDistributedSampler, Trainer
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +19,22 @@ CONFIG = ROOT / "configs/human_pose/hmr-utonia-v1m1-0-bedlam.py"
 
 
 class ScheduleTests(unittest.TestCase):
+    def test_resumable_sampler_seeks_without_changing_order(self):
+        dataset = torch.utils.data.TensorDataset(torch.arange(40))
+        expected_sampler = torch.utils.data.distributed.DistributedSampler(
+            dataset, num_replicas=2, rank=1, shuffle=True, seed=123
+        )
+        expected_sampler.set_epoch(4)
+        expected = list(expected_sampler)
+
+        sampler = ResumableDistributedSampler(
+            dataset, num_replicas=2, rank=1, shuffle=True, seed=123
+        )
+        sampler.set_epoch(4)
+        sampler.set_start_iter(start_iter=3, batch_size=2)
+        self.assertEqual(list(sampler), expected[6:])
+        self.assertEqual(len(sampler), len(expected))
+
     def test_config_and_scheduler(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = default_config_parser(str(CONFIG), {"save_path": tmp})
@@ -46,11 +62,12 @@ class ScheduleTests(unittest.TestCase):
         optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
         return SimpleNamespace(
             cfg=SimpleNamespace(evaluate=True, eval_every_step=interval,
-                                save_path=path, enable_amp=False),
+                                save_path=path, enable_amp=False, seed=0),
             model=model, optimizer=optimizer,
             scheduler=torch.optim.lr_scheduler.StepLR(optimizer, 1),
             logger=logging.getLogger("schedule-test"), comm_info={"iter": 0},
             global_step=0, epoch=0, best_metric_value=-torch.inf,
+            current_sampler_seed=0,
         )
 
     def test_cadence_best_checkpoint_and_epoch_boundary(self):

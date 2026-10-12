@@ -1,7 +1,7 @@
 _base_ = ["../_base_/default_runtime.py"]
 
-patch_size = 32
-
+patch_size = 256
+seed = 51941598
 model = dict(
     type="UtoniaHumanPose",
     pretrained_path=__import__("os").environ.get(

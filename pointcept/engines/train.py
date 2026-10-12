@@ -46,6 +46,23 @@ AMP_DTYPE = dict(
 )
 
 
+class ResumableDistributedSampler(torch.utils.data.distributed.DistributedSampler):
+    """DistributedSampler that can seek to a batch boundary without loading data."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.start_index = 0
+
+    def set_start_iter(self, start_iter, batch_size):
+        if start_iter < 0 or batch_size <= 0:
+            raise ValueError("start_iter must be non-negative and batch_size positive")
+        self.start_index = start_iter * batch_size
+
+    def __iter__(self):
+        indices = list(super().__iter__())
+        return iter(indices[self.start_index :])
+
+
 class TrainerBase:
     def __init__(self) -> None:
         self.hooks = []
@@ -135,6 +152,7 @@ class Trainer(TrainerBase):
         self.epoch = 0
         self.start_epoch = 0
         self.start_iter = 0
+        self.current_sampler_seed = cfg.seed
         self.global_step = 0
         self.max_epoch = cfg.epoch
         self.best_metric_value = -torch.inf
@@ -169,17 +187,44 @@ class Trainer(TrainerBase):
             self.logger.info(">>>>>>>>>>>>>>>> Start Training >>>>>>>>>>>>>>>>")
             for self.epoch in range(self.start_epoch, self.max_epoch):
                 # => before epoch
-                if hasattr(self.train_loader.sampler, "set_epoch"):
-                    self.train_loader.sampler.set_epoch(self.epoch)
+                sampler = self.train_loader.sampler
+                is_resume_epoch = self.epoch == self.start_epoch
+                epoch_start_iter = self.start_iter if is_resume_epoch else 0
+                fast_resume = hasattr(sampler, "set_start_iter")
+                if fast_resume:
+                    if is_resume_epoch and epoch_start_iter:
+                        sampler.seed = self.current_sampler_seed
+                    else:
+                        sampler.seed = self.cfg.seed if self.cfg.seed is not None else 0
+                    self.current_sampler_seed = sampler.seed
+                    sampler.set_start_iter(
+                        epoch_start_iter if is_resume_epoch else 0,
+                        self.cfg.batch_size_per_gpu,
+                    )
+                    if is_resume_epoch and epoch_start_iter:
+                        self.logger.info(
+                            "Fast-resuming sampler at epoch %d iteration %d "
+                            "(seed=%d); skipped dataset batches will not be loaded.",
+                            self.epoch,
+                            epoch_start_iter,
+                            sampler.seed,
+                        )
+                if hasattr(sampler, "set_epoch"):
+                    sampler.set_epoch(self.epoch)
                 self.model.train()
                 self.data_iterator = enumerate(self.train_loader)
                 self.before_epoch()
                 # => run_epoch
                 for (
-                    self.comm_info["iter"],
+                    data_iter,
                     self.comm_info["input_dict"],
                 ) in self.data_iterator:
-                    if self.comm_info["iter"] < self.start_iter:
+                    self.comm_info["iter"] = (
+                        data_iter + epoch_start_iter
+                        if fast_resume
+                        else data_iter
+                    )
+                    if not fast_resume and self.comm_info["iter"] < epoch_start_iter:
                         continue
                     # => before_step
                     self.before_step()
@@ -299,7 +344,7 @@ class Trainer(TrainerBase):
         if comm.get_world_size() > 1 or self.cfg.data.train.get(
             "human_pose_collate", False
         ):
-            train_sampler = torch.utils.data.distributed.DistributedSampler(
+            train_sampler = ResumableDistributedSampler(
                 train_data,
                 num_replicas=comm.get_world_size(),
                 rank=comm.get_rank(),
