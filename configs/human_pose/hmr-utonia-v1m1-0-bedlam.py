@@ -1,6 +1,6 @@
 _base_ = ["../_base_/default_runtime.py"]
 
-patch_size = 256
+patch_size = 128
 seed = 51941598
 model = dict(
     type="UtoniaHumanPose",

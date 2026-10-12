@@ -158,7 +158,7 @@ class UtoniaHumanPose(nn.Module):
             nn.Linear(self.backbone_out_channels, hidden_dim - 3), nn.GELU())
         self.joint_seed = nn.Sequential(nn.Linear(1024, 22 * 64), nn.ReLU())
         self.joint_up_proj = nn.Linear(64, hidden_dim)
-        self.root_token = nn.Parameter(torch.zeros(1, hidden_dim))
+        # The decoder contains one query for each of the 22 body joints.
         self.decoder = nn.ModuleList([
             _QueryDecoderLayer(hidden_dim, num_heads, dropout)
             for _ in range(2)
@@ -173,7 +173,6 @@ class UtoniaHumanPose(nn.Module):
         self.joint_token_reduce = nn.Sequential(nn.Linear(hidden_dim, 64),
                                                 nn.ReLU(), nn.Dropout(dropout),
                                                 nn.Linear(64, 32))
-        self.root_pos_proj = nn.Linear(hidden_dim, 32)
         self.trans_head = nn.Sequential(nn.Linear(22 * 32, 512), nn.ReLU(),
                                         nn.Linear(512, 256), nn.ReLU(),
                                         nn.Dropout(dropout), nn.Linear(256, 3))
@@ -302,15 +301,12 @@ class UtoniaHumanPose(nn.Module):
         memory, mask = self._memory(point)
         query = self.joint_seed(global_feat).view(-1, 22, 64)
         query = self.joint_up_proj(query)
-        query = torch.cat(
-            [query, self.root_token.expand(query.shape[0], -1, -1)], dim=1)
         weights = None
         for layer in self.decoder:
             query, weights = layer(query, memory, mask)
         pose6d = self.pose_head(query[:, :22])
         reduced = self.joint_token_reduce(query[:, :22])
-        trans_tokens = reduced + self.root_pos_proj(query[:, 22]).unsqueeze(1)
-        trans = self.trans_head(trans_tokens.reshape(query.shape[0], -1))
+        trans = self.trans_head(reduced.reshape(query.shape[0], -1))
         betas = self.beta_head(self.beta_pool_mlp(query[:, :22].amax(1)))
         output = {
             "pred_pose6d": pose6d,

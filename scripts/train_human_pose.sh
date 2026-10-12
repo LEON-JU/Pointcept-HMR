@@ -17,7 +17,7 @@ export BEDLAM_GT_ROOT="${BEDLAM_GT_ROOT:-/home/juyiang/data/bedlam/gt_shard}"
 export BEHAVE_MANIFEST="${BEHAVE_MANIFEST:-/home/juyiang/data/PointTransformerV3_HumanPointCloud/data/behave/behave_evaluation_full_shard}"
 export SMPLX_MODELS_DIR="${SMPLX_MODELS_DIR:-/home/juyiang/data/SMPL_models/models}"
 
-SAVE_PATH="${SAVE_PATH:-${ROOT}/exp/human_pose/hmr-utonia-v1m1-0-bedlam-256}"
+SAVE_PATH="${SAVE_PATH:-${ROOT}/exp/human_pose/hmr-utonia-v1m1-0-bedlam}"
 SWANLAB_PROJECT="${SWANLAB_PROJECT:-utonia_pointcept}"
 SWANLAB_MODE="${SWANLAB_MODE:-online}"
 BUILD_OPS="${BUILD_OPS:-0}"

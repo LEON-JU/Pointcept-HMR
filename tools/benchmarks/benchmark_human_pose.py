@@ -163,7 +163,7 @@ def main():
         wrap_module(original.token_proj, 'token_projection')
         for layer in original.decoder:
             wrap_module(layer, 'decoder')
-        for name in ['joint_seed', 'joint_up_proj', 'pose_head', 'joint_token_reduce', 'root_pos_proj', 'trans_head', 'beta_pool_mlp', 'beta_head']:
+        for name in ['joint_seed', 'joint_up_proj', 'pose_head', 'joint_token_reduce', 'trans_head', 'beta_pool_mlp', 'beta_head']:
             wrap_module(getattr(original, name), 'pose_heads_and_queries')
     if world > 1:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local], broadcast_buffers=False, find_unused_parameters=cfg.find_unused_parameters)
